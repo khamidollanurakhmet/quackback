@@ -1,0 +1,6 @@
+# LF everywhere: the commit-msg hook is a bash script and breaks with CRLF line endings.
+* text=auto eol=lf
+
+*.png binary
+*.gif binary
+*.jpg binary

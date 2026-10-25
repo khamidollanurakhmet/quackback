@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Models & media (download at runtime, never commit)
+models/
+*.onnx
+*.wav
+*.mp3
+*.mp4
+
+# Secrets & local settings
+.env
+.env.*
+.claude/settings.local.json
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

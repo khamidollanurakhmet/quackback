@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Strips AI co-author / "Generated with" trailers from commit messages.
+# Enable once per clone:  git config core.hooksPath .githooks
+set -euo pipefail
+
+msg_file="$1"
+tmp="$(mktemp)"
+
+grep -viE '^[[:space:]]*Co-Authored-By:.*(Claude|anthropic)' "$msg_file" \
+  | grep -viE 'Generated with \[?Claude Code' \
+  | grep -viE '^[[:space:]]*Claude-Session:' \
+  > "$tmp" || true
+
+# Drop trailing blank lines left behind after stripping.
+sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}' "$tmp" > "$msg_file"
+rm -f "$tmp"

@@ -7,7 +7,17 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "khamidollanurakhmet" }]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "anyio>=4.10",
+    "desktop-notifier>=6.2",
+    "faster-whisper>=1.2.1",
+    "mcp>=2.3,<3",
+    "numpy>=1.26",
+    "piper-tts>=1.8",
+    "pydantic>=2.7",
+    "sounddevice>=0.5",
+    "typing-extensions>=4.12",
+]
 keywords = ["mcp", "voice", "robot", "microduck", "coding-agent"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -20,6 +30,9 @@ classifiers = [
 
 [project.urls]
 Repository = "https://github.com/khamidollanurakhmet/quackback"
+
+[project.scripts]
+quackback = "quackback.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.14"]
@@ -50,7 +63,19 @@ select = [
     "T20",   # no print(): stdout belongs to the MCP stdio transport
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# The setup commands (`download`, `try`) talk to a terminal, never to an MCP client.
+"src/quackback/cli.py" = ["T20"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 xfail_strict = true
+markers = [
+    "models: needs the real Piper and Whisper models (run with QUACKBACK_TEST_MODELS=1)",
+]
+
+[tool.uv]
+# Keep the lock installable on Intel Macs: onnxruntime stopped publishing x86_64 macOS wheels
+# after 1.23, so that platform resolves its own, older onnxruntime.
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'x86_64'"]

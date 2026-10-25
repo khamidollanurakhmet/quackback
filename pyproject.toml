@@ -1,0 +1,56 @@
+[project]
+name = "quackback"
+version = "0.1.0"
+description = "Rubber duck debugging, reversed: an MCP ask_human tool that asks you out loud, optionally through a Microduck robot."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "khamidollanurakhmet" }]
+requires-python = ">=3.11"
+dependencies = []
+keywords = ["mcp", "voice", "robot", "microduck", "coding-agent"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/khamidollanurakhmet/quackback"
+
+[build-system]
+requires = ["uv_build>=0.11.3,<0.14"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1",
+    "ruff>=0.17",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # bugbear
+    "UP",    # pyupgrade
+    "SIM",   # simplify
+    "ASYNC", # async pitfalls
+    "PT",    # pytest style
+    "RUF",   # ruff-specific
+    "T20",   # no print(): stdout belongs to the MCP stdio transport
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true

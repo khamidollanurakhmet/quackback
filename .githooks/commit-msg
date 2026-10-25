@@ -2,6 +2,9 @@
 # Strips AI co-author / "Generated with" trailers from commit messages.
 # Enable once per clone:  git config core.hooksPath .githooks
 set -euo pipefail
+# Byte-wise matching: in a UTF-8 locale grep treats a message with invalid UTF-8 as binary
+# and drops lines (or appends "Binary file ... matches"). The patterns are plain ASCII.
+export LC_ALL=C
 
 msg_file="$1"
 tmp="$(mktemp)"

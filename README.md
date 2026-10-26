@@ -2,106 +2,222 @@
 
 *Rubber duck debugging, reversed. When your coding agent gets stuck, the duck waddles over and asks you.*
 
+![A simulated Microduck looks around, walks up to a person, asks the coding agent's question and walks back](docs/demo.gif)
+
+<sub>quackback driving the [Microduck simulator](https://huggingface.co/spaces/pollen-robotics/microduck-simulator), twice as fast as life. Bottom right: the duck's camera, and the person the detector on the PC found in it.</sub>
+
 quackback is an [MCP](https://modelcontextprotocol.io) server built around one tool, `ask_human`.
-When a coding agent has a question, it calls the tool: quackback asks you out loud, listens to your spoken
-answer and hands the text back to the agent. With a [Microduck](https://github.com/pollen-robotics/microduck)
-robot, the duck walks over to you first; without one, your PC does the asking.
+When your coding agent (Claude Code, Codex, Cursor: anything that speaks MCP) is stuck on
+something only you know, it calls the tool. A [Microduck](https://github.com/pollen-robotics/microduck)
+robot looks around for you and walks over, your PC asks the question out loud, and your spoken
+answer goes back to the agent as text. No robot? The PC asks on its own.
 
-> **Status:** voice on the PC works (speaker + microphone, with a keyboard fallback), and a
-> simulated Microduck finds a person with its camera and walks over to ask.
+> **Status:** works with the simulated Microduck, and with voice on the PC alone. A real
+> Microduck needs a connection to its robot runtime that is not written yet (see
+> [the integration notes](docs/microduck-integration.md)).
 
-## Try it
+## Install
 
-```bash
-uv tool install git+https://github.com/khamidollanurakhmet/quackback
-quackback download   # the voice models, about 550 MB, once
-quackback try        # asks a test question out loud and prints what it heard
-```
-
-The MCP server is the plain `quackback` command on stdio. Point your MCP client at it; the
-`ask_human` call blocks until you answer, for up to `QUACKBACK_ASK_TIMEOUT` seconds (300 by
-default), so give the client a longer tool timeout than that.
-
-## A duck in the simulator
-
-No Microduck on your desk? The [Microduck simulator](https://huggingface.co/spaces/pollen-robotics/microduck-simulator)
-runs the real trained walking policy in your browser, and quackback can drive it:
+One command, with [uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```bash
-uv tool install "quackback[sandbox] @ git+https://github.com/khamidollanurakhmet/quackback"
-quackback setup-sandbox    # only without Edge or Chrome, or to record video
-QUACKBACK_ROBOT=sandbox quackback try
+uv tool install --python 3.13 --managed-python "quackback[sandbox] @ git+https://github.com/khamidollanurakhmet/quackback"
 ```
 
-quackback opens the simulator in Edge or Chrome and puts a stand-in person in the arena (you
-cannot stand in a browser tab). For every question the duck:
+That is Python 3.13 as uv builds it, which has everything quackback needs (Tk, for the dialog);
+some of the speech libraries have no builds for newer Pythons on every platform yet. It works on
+Windows, macOS and Linux, on x86-64 and Arm, except Windows on Arm.
 
-1. shows the question above the scene, and looks up and around with its head camera until it
-   sees the person. The pictures are analysed on your PC, with MediaPipe's person detector;
-2. walks toward them, and stops well before its depth sensor has them 40 cm away: about 65 cm in
-   the simulator, whose duck turns only in arcs and needs that room to turn around and leave;
-3. turns its head to face them and flaps its beak. The simulator's own sound is switched off
-   upstream, so your PC speaks the question;
-4. walks back to where it started once you have answered or the question timed out. Before it
-   turns round it looks about with its depth sensor, and it turns only the way that keeps it
-   clear of you (or stays put, if neither way does).
+On Linux, install PortAudio first, for the microphone and speaker: `sudo apt install
+libportaudio2` on Debian and Ubuntu.
 
-Whenever it walks, the duck stops for anything its depth sensor sees closer than 50 cm in its
-way.
+Then download the models once (about 550 MB: a voice, a speech recogniser, a person detector)
+and ask yourself a test question:
 
-If nobody comes into view within `QUACKBACK_PERSON_SEARCH_TIMEOUT` seconds, the question is
-asked on your PC without the duck. Without the `vision` extra (it comes with `sandbox`), or with
-`QUACKBACK_FIND_PERSON=false`, the duck walks blind to `QUACKBACK_ROBOT_TARGET` and stops 40 cm
-short.
+```bash
+quackback download
+quackback try                            # voice on this PC
+QUACKBACK_ROBOT=sandbox quackback try    # with the simulated duck
+```
 
+(In PowerShell, set the variable first: `$env:QUACKBACK_ROBOT = "sandbox"`.) The simulator runs
+in Edge or Chrome. Without either, or to record video, run `quackback setup-sandbox` once (on
+Linux, Playwright's Chromium may also need [its system libraries](https://playwright.dev/python/docs/browsers#install-system-dependencies)).
+For voice alone, without the simulator and its browser parts, leave out `[sandbox]`.
+
+## Connect your coding agent
+
+The MCP server is the `quackback` command, on stdio. `ask_human` waits for your answer for up to
+`QUACKBACK_ASK_TIMEOUT` seconds (300 by default), so the agent must be willing to wait at least
+that long. If a client cannot find `quackback` (a desktop app may not see your shell's `PATH`),
+give it the full path: `uv tool dir --bin` prints the folder.
+
+### Claude Code
+
+```bash
+claude mcp add --scope user --transport stdio quackback -- quackback
+```
+
+With the simulated duck:
+
+```bash
+claude mcp add --scope user --env QUACKBACK_ROBOT=sandbox --transport stdio quackback -- quackback
+```
+
+Check it with `claude mcp list`, or `/mcp` in a session. With the simulated duck, every session
+that starts quackback opens a simulator window, so you may want that one without `--scope user`:
+then it is for the current project only.
+
+Claude Code moves a tool call that is still running after 2 minutes into the background and
+carries on working; your answer still reaches it when you give it. To have it wait for you
+instead, set `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` to `0`, for example in
+`~/.claude/settings.json`:
+
+```json
+{
+  "env": { "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0" }
+}
+```
+
+If you have set `MCP_TOOL_TIMEOUT`, keep it above `QUACKBACK_ASK_TIMEOUT` in milliseconds, plus a
+few seconds (`305000` for the default); `quackback` warns in its log when it is lower.
+
+### Codex
+
+```bash
+codex mcp add quackback -- quackback
+```
+
+Codex gives a tool call 300 seconds by default, as long as quackback waits, so the answer could
+arrive just too late. Codex also passes a server only a few of your environment variables. Fix
+both in `~/.codex/config.toml`, where the command above put the server:
+
+```toml
+[mcp_servers.quackback]
+command = "quackback"
+tool_timeout_sec = 330
+env = { QUACKBACK_ROBOT = "sandbox" }   # optional: the simulated duck; quackback settings go here
+# Linux: let quackback reach your screen (the dialog, the simulator window) and your sound.
+env_vars = ["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]
+```
+
+### Any other MCP client
+
+```json
+{
+  "mcpServers": {
+    "quackback": {
+      "command": "quackback",
+      "env": { "QUACKBACK_ROBOT": "sandbox" }
+    }
+  }
+}
+```
+
+Leave out `env` for voice alone, and set the client's tool timeout above 300 seconds if it has
+one.
+
+## How it works
+
+```mermaid
+flowchart LR
+    agent["Coding agent"] -- "ask_human(question)" --> qb["quackback, on your PC"]
+    qb -- "walk, turn, look, quack" --> duck["Microduck"]
+    duck -- "camera, depth sensor, position" --> qb
+    qb -- "speaks the question" --> you(("You"))
+    you -- "answer, out loud" --> qb
+    qb -- "the answer, as text" --> agent
+```
+
+The PC is the brain and the duck is the body: everything heavy runs on your PC, and the duck
+only gets simple commands (walk, turn, look, quack), ten times a second, while its own walking
+policy keeps its balance.
+
+1. **The agent asks.** It calls `ask_human` with the question, a sentence of context, and
+   choices if there are any.
+2. **The duck finds you.** It stands and looks around with its head camera; the pictures come
+   to the PC, where [MediaPipe](https://ai.google.dev/edge/mediapipe)'s person detector looks for
+   you. Then it walks over, steered from the PC, and stops when its depth sensor has you well
+   clear of 40 cm (about 65 cm in the simulator). It turns its head to face you and quacks.
+3. **The PC asks.** [Piper](https://github.com/OHF-Voice/piper1-gpl) speaks the question, and
+   [faster-whisper](https://github.com/SYSTRAN/faster-whisper) writes down your answer. Both run
+   on your machine; audio never leaves it and is never saved. With choices, the answer is
+   matched to the closest one.
+4. **The agent gets the answer,** and the duck walks home: before it turns round, it looks about
+   and turns only the way that keeps it clear of you.
+
+If something does not work, the question still gets asked:
+
+- no duck, or it cannot find you within 30 seconds: your PC asks;
+- no microphone or speaker, or the voice cannot make out your answer: a dialog on your screen;
+- no answer within the timeout: the agent hears "The human did not answer. Make a reasonable
+  decision and note it." and carries on.
+
+**Your voice answers questions; it never grants permission.** Anyone in the room, or a video
+playing nearby, can answer. The tool tells the agent so: a spoken answer is not approval for
+deploys, deletions, payments or anything else risky.
+
+## The simulated duck
+
+The [Microduck simulator](https://huggingface.co/spaces/pollen-robotics/microduck-simulator)
+runs the real trained walking policy in your browser. quackback drives it like a robot, adds a
+duck's-eye camera and depth sensor to the page, and puts a stand-in person in the arena (you
+cannot stand in a browser tab).
+
+- It shows the question above the scene; the simulator's own sound is off upstream, so your PC
+  speaks it.
+- Whenever it walks, the duck stops for anything its depth sensor sees closer than 50 cm in its
+  way, and it stops by itself within half a second if quackback stops sending commands.
+- The server's second tool, `stop_robot`, stops the duck at once; it stays put, without walking
+  home, until the next question.
+- Your keyboard or gamepad always overrides quackback in the simulator, as on the real robot.
+- quackback switches the page's multiplayer off, so other visitors never see your duck.
 - Keep the simulator window open, not minimized: a minimized browser stops drawing, and the duck
   sees nothing.
-- MediaPipe has no build for Intel Macs, so there the duck always walks blind.
-- Your keyboard or gamepad always overrides quackback in the simulator, as on the real robot.
-- The duck stops by itself within half a second if quackback stops sending it commands.
-- The agent also gets a second tool, `stop_robot`: stop now, and stay put for the rest of the
-  question.
-- quackback switches the page's multiplayer off, so other visitors never see your duck.
+- MediaPipe has no build for Intel Macs, so there the duck walks blind to
+  `QUACKBACK_ROBOT_TARGET` and stops 40 cm short. So it does with `QUACKBACK_FIND_PERSON=false`,
+  or without the `vision` extra (which comes with `sandbox`).
 
 ## Settings
 
-Environment variables, or the same names in lower case in `config.toml` (in `%APPDATA%\quackback\`
-on Windows, `~/Library/Application Support/quackback/` on macOS, `~/.config/quackback/` on Linux,
-or wherever `QUACKBACK_CONFIG` points):
+Environment variables, or the same names without `QUACKBACK_`, in lower case, in `config.toml`
+(`ask_timeout = 600`, `robot = "sandbox"`). That file is in `%APPDATA%\quackback\` on Windows,
+`~/Library/Application Support/quackback/` on macOS, `~/.config/quackback/` on Linux, or wherever
+`QUACKBACK_CONFIG` points; a name quackback does not know stops it from starting, with a message
+saying which.
 
 | Variable | Default | |
 |---|---|---|
 | `QUACKBACK_ASK_TIMEOUT` | `300` | seconds to wait for an answer |
-| `QUACKBACK_VOICE` | `true` | `false`: skip speech, use the keyboard dialog |
+| `QUACKBACK_VOICE` | `true` | `false`: skip speech, use the dialog |
 | `QUACKBACK_WHISPER_MODEL` | `small.en` | any faster-whisper model, e.g. `base.en`, `large-v3-turbo` |
 | `QUACKBACK_LANGUAGE` | `en` | Whisper language; empty to detect |
 | `QUACKBACK_PIPER_VOICE` | `en_US-lessac-medium` | a [Piper voice](https://huggingface.co/rhasspy/piper-voices) name or a path to an `.onnx` voice |
 | `QUACKBACK_INPUT_DEVICE` / `QUACKBACK_OUTPUT_DEVICE` | system default | a device name or index |
 | `QUACKBACK_LOG_FILE` | none | also log here (logs always go to stderr) |
 | `QUACKBACK_ROBOT` | `none` | `sandbox`: the Microduck simulator walks over to ask |
-| `QUACKBACK_ROBOT_TARGET` | `1.5,0.0` | where you are: metres forward, left of the duck's start. A duck that cannot look for you walks there and stops 0.4 m short |
 | `QUACKBACK_FIND_PERSON` | `true` | let a duck with a camera look for you (needs the `vision` extra) |
 | `QUACKBACK_PERSON_SEARCH_TIMEOUT` | `30` | seconds to look before asking on the PC instead |
-| `QUACKBACK_MAX_SPEED` / `QUACKBACK_MAX_TURN` | the robot's | speed caps, m/s and rad/s (the simulator only walks at 0.25 m/s) |
+| `QUACKBACK_ROBOT_TARGET` | `1.5,0.0` | where you are: metres forward, left of the duck's start. A duck that cannot look for you walks there and stops 0.4 m short |
+| `QUACKBACK_MAX_SPEED` / `QUACKBACK_MAX_TURN` | the robot's | speed caps, m/s and rad/s (the simulator needs 0.25 m/s: a lower cap keeps it from walking) |
 | `QUACKBACK_SANDBOX_BROWSER` | Edge on Windows, else Chrome | a Playwright channel, e.g. `chrome`, `msedge` |
 | `QUACKBACK_SANDBOX_HEADLESS` | `false` | run the simulator without a window |
 | `QUACKBACK_SANDBOX_RECORD_DIR` | none | record the simulator as video (run `quackback setup-sandbox` once) |
 | `QUACKBACK_SANDBOX_PERSON` | at `ROBOT_TARGET` | where the stand-in person stands, `forward,left` like `ROBOT_TARGET`; `none` for nobody |
 | `QUACKBACK_SANDBOX_PERSON_IMAGE` | the bundled one | a picture of the stand-in person, ideally a PNG with a transparent background |
 
-Audio is never written to disk, and the duck's camera pictures are never saved either.
+## Privacy
 
-**MediaPipe and Google.** Google's MediaPipe, which quackback uses to find people in the duck's
-pictures, sends Google usage metrics (not pictures) when a detector is shut down, and has no
-setting to turn that off. quackback never shuts its detector down: it lives as long as the
-quackback process and is dropped at exit without that call. Set `QUACKBACK_FIND_PERSON=false`,
-or install without the `vision` extra, to not run MediaPipe at all. quackback downloads the
-detector's model (EfficientDet-Lite0, 4.6 MB) from Google's MediaPipe model storage once, with
-`quackback download` or on first use, and checks it against a pinned hash.
-
-**Voice answers are information, not permission.** Anyone in the room, or a video playing nearby,
-can answer. quackback tells the agent so, and the agent must not treat a spoken answer as approval
-for anything risky.
+- Audio is never written to disk, and the duck's camera pictures are never saved either.
+- Speech recognition, speech and person detection all run on your PC.
+- **MediaPipe and Google.** MediaPipe sends Google usage metrics (not pictures) when a detector
+  is shut down, and has no setting to turn that off. quackback never shuts its detector down: it
+  lives as long as the quackback process and is dropped at exit without that call. Set
+  `QUACKBACK_FIND_PERSON=false`, or install without the `vision` extra, to not run MediaPipe at
+  all.
+- The models are downloaded once: the voice and speech recogniser from Hugging Face, the
+  detector's model (EfficientDet-Lite0, 4.6 MB) from Google's MediaPipe model storage, checked
+  against a pinned hash.
 
 ## Development
 
@@ -111,8 +227,9 @@ uv run ruff check
 uv run ruff format --check
 uv run pytest
 QUACKBACK_TEST_MODELS=1 uv run --extra vision pytest -m models   # the real voice and detector models
+uv run --extra sandbox quackback setup-sandbox   # once: Playwright's ffmpeg (and Chromium)
 QUACKBACK_TEST_SANDBOX=1 uv run --extra sandbox pytest -m sandbox   # against the simulator website
-uv run --extra sandbox python scripts/record_demo.py demo/   # records the demo video
+uv run --extra sandbox python scripts/record_demo.py demo/   # records the demo video and GIF
 ```
 
 Enable the commit-msg hook once per clone:

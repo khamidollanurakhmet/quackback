@@ -15,6 +15,15 @@ SANDBOX = Gait(max_speed=0.25, max_turn=1.0, min_speed=0.25, turns_in_place=Fals
 NIMBLE = Gait(max_speed=0.3, max_turn=1.0)
 
 
+@pytest.fixture(autouse=True)
+def _quick_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The mock duck has eyes: an arc-walking one looks about before it turns round.
+    from quackback.robot import microduck
+
+    monkeypatch.setattr(microduck, "HEAD_SETTLE_S", 0.0)
+    monkeypatch.setattr(microduck, "SCAN_S", 0.0)
+
+
 def _backend(link: MockLink, **settings: object) -> MicroduckBackend:
     return MicroduckBackend(link, Settings(**settings))  # type: ignore[arg-type]
 

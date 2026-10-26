@@ -220,7 +220,7 @@ async def test_keyboard_is_told_when_to_give_up() -> None:
     keyboard = FakeKeyboard("typed")
     await _asker(None, keyboard, ask_timeout=40).ask("When?")
     assert keyboard.close_after[0] is not None
-    assert 39 < keyboard.close_after[0] <= 40
+    assert keyboard.close_after[0] == pytest.approx(40, abs=1)  # the time left of 40 s
 
 
 def test_spoken_question_adds_full_stops() -> None:

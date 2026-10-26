@@ -11,6 +11,7 @@ from quackback.robot.base import CameraFrame, Pose, RobotError
 from quackback.robot.depth import DepthFrame
 from quackback.robot.microduck import (
     ARRIVE_RADIUS,
+    CONTROL_HZ,
     FACE_PITCH,
     SEARCH_PITCH,
     TOF_AHEAD,
@@ -430,9 +431,12 @@ async def test_walking_up_to_the_human_without_a_detector_stops_by_depth(gait: G
             )
         assert error is None  # arrived: the human is where it was told
         assert closest >= 0.4
-        # Stopped by the depth sensor, before the 0.5 m it would stop at on its own (0.42 m
-        # from the nose), and, for an arc-walking duck, with room to turn round and leave.
-        assert _sensor_distance(link, await link.pose()) >= 0.5
+        # Stopped by the depth sensor, at the distance it stops at for a person (further out
+        # for an arc-walking duck, to have room to turn round and leave), give or take two
+        # ticks of walking on a slow machine; not 0.42 m from the nose, where it would stop
+        # on its own, 0.5 m short of the target.
+        two_ticks = 2 * gait.max_speed * SCALE / CONTROL_HZ
+        assert _sensor_distance(link, await link.pose()) >= robot._person_stop - two_ticks
         with anyio.fail_after(60):
             error, closest = await _closest_during(link, lambda: robot.go_to(0.0, 0.0))
         assert error is None

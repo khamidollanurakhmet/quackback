@@ -34,6 +34,11 @@ Repository = "https://github.com/khamidollanurakhmet/quackback"
 [project.scripts]
 quackback = "quackback.cli:main"
 
+[project.optional-dependencies]
+sandbox = [
+    "playwright>=1.50",
+]
+
 [build-system]
 requires = ["uv_build>=0.11.3,<0.14"]
 build-backend = "uv_build"
@@ -73,6 +78,7 @@ addopts = ["-ra", "--strict-markers", "--strict-config"]
 xfail_strict = true
 markers = [
     "models: needs the real Piper and Whisper models (run with QUACKBACK_TEST_MODELS=1)",
+    "sandbox: drives the simulator website in a browser (run with QUACKBACK_TEST_SANDBOX=1)",
 ]
 
 [tool.uv]

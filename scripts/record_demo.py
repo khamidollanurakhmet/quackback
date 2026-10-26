@@ -6,7 +6,8 @@ Runs the real ask_human flow (Asker + MicroduckBackend + person detector + the s
 website) with a scripted human, so it needs no microphone and makes no sound. The stand-in
 person stands off to the side, so the duck has to look around first; an inset shows what the
 duck's camera sees and the box the detector on the PC drew. Writes demo/quackback-demo.mp4 (the
-boot screen trimmed off) and demo/quackback-demo.gif.
+boot screen trimmed off) and demo/quackback-demo.gif (for the README: smaller, twice as fast).
+Uses PyAV and Pillow, which come with the sandbox extra.
 """
 
 import argparse
@@ -35,6 +36,12 @@ ANSWER = "SQLite, keep it simple."
 PERSON = "1.3,-0.7"  # forward, left of the duck's start: out of view at first
 GIF_WIDTH = 640
 GIF_FPS = 10
+GIF_SPEED = 2.0  # the GIF plays this much faster than life
+GIF_COLOURS = 128
+# A pixel changing by less than this from one GIF frame to the next is video noise, and kept;
+# every so many frames, every pixel is fresh again.
+GIF_STILL = 16
+GIF_REFRESH = 20
 MP4_FPS = 25
 
 
@@ -181,41 +188,60 @@ async def record(video_dir: Path) -> float:
     return booted
 
 
-def transcode(webm: Path, mp4: Path, gif: Path, start_s: float) -> None:
-    """Cut the boot screen, then write an H.264 mp4 and a small GIF, each frame renumbered."""
-    with av.open(str(webm)) as source:
+def transcode(webm: Path, mp4: Path, start_s: float) -> None:
+    """Cut the boot screen and write an H.264 mp4, each frame renumbered."""
+    with av.open(str(webm)) as source, av.open(str(mp4), "w") as out:
         stream = source.streams.video[0]
-        with av.open(str(mp4), "w") as out_mp4, av.open(str(gif), "w") as out_gif:
-            h264 = out_mp4.add_stream("libx264", rate=MP4_FPS)
-            h264.width, h264.height, h264.pix_fmt = stream.width, stream.height, "yuv420p"
-            h264.options = {"crf": "23", "preset": "medium"}
-            palette = out_gif.add_stream("gif", rate=GIF_FPS)
-            palette.width = GIF_WIDTH
-            palette.height = round(stream.height * GIF_WIDTH / stream.width / 2) * 2
-            palette.pix_fmt = "rgb8"
-            outputs = (
-                (out_mp4, h264, MP4_FPS, "yuv420p", None),
-                (out_gif, palette, GIF_FPS, "rgb8", (palette.width, palette.height)),
-            )
-            written = [0, 0]
-            for frame in source.decode(stream):
-                t = float(frame.time or 0.0) - start_s
-                if t < 0:
-                    continue
-                for i, (container, out, fps, pix_fmt, size) in enumerate(outputs):
-                    # Each output frame takes the source frame showing at its own tick.
-                    while written[i] <= t * fps:
-                        width, height = size or (stream.width, stream.height)
-                        copy = frame.reformat(width, height, format=pix_fmt)
-                        copy.pts = written[i]
-                        # Explicit: the stream's own time base is unset until the first mux.
-                        copy.time_base = Fraction(1, fps)
-                        written[i] += 1
-                        for packet in out.encode(copy):
-                            container.mux(packet)
-            for container, out, *_ in outputs:
-                for packet in out.encode():
-                    container.mux(packet)
+        h264 = out.add_stream("libx264", rate=MP4_FPS)
+        h264.width, h264.height, h264.pix_fmt = stream.width, stream.height, "yuv420p"
+        h264.options = {"crf": "23", "preset": "medium"}
+        written = 0
+        for frame in source.decode(stream):
+            t = float(frame.time or 0.0) - start_s
+            # Each output frame takes the source frame showing at its tick.
+            while t >= 0 and written <= t * MP4_FPS:
+                copy = frame.reformat(format="yuv420p")
+                copy.pts = written
+                # Explicit: the stream's own time base is unset until the first mux.
+                copy.time_base = Fraction(1, MP4_FPS)
+                written += 1
+                for packet in h264.encode(copy):
+                    out.mux(packet)
+        for packet in h264.encode():
+            out.mux(packet)
+
+
+def write_gif(mp4: Path, gif: Path) -> None:
+    """The mp4 as a README-sized GIF: sped up, and with one palette made for it (a fixed
+    palette bands the simulator's dark scene)."""
+    from PIL import Image
+
+    frames: list[Image.Image] = []
+    shown: np.ndarray | None = None
+    with av.open(str(mp4)) as source:
+        stream = source.streams.video[0]
+        height = round(stream.height * GIF_WIDTH / stream.width)
+        for frame in source.decode(stream):
+            t = float(frame.time or 0.0)
+            while len(frames) * GIF_SPEED / GIF_FPS <= t:
+                image = frame.to_image().resize((GIF_WIDTH, height), Image.Resampling.LANCZOS)
+                pixels = np.asarray(image).astype(np.int16)
+                if shown is not None and len(frames) % GIF_REFRESH:
+                    # The video's compression noise moves every pixel a little, every frame:
+                    # keep what was shown unless it really changed, so the GIF stores only
+                    # what moves.
+                    moved = np.abs(pixels - shown).max(axis=2, keepdims=True) > GIF_STILL
+                    pixels = np.where(moved, pixels, shown)
+                shown = pixels
+                frames.append(Image.fromarray(pixels.astype(np.uint8)))
+    sample = frames[:: max(1, len(frames) // 16)]
+    strip = Image.new("RGB", (GIF_WIDTH, height * len(sample)))
+    for i, image in enumerate(sample):
+        strip.paste(image, (0, i * height))
+    palette = strip.quantize(GIF_COLOURS, method=Image.Quantize.MEDIANCUT)
+    # No dithering: its noise changes every frame, and the GIF would store every pixel again.
+    images = [image.quantize(palette=palette, dither=Image.Dither.NONE) for image in frames]
+    images[0].save(gif, save_all=True, append_images=images[1:], duration=1000 // GIF_FPS, loop=0)
 
 
 def main() -> None:
@@ -225,17 +251,23 @@ def main() -> None:
         "--transcode-only", type=float, metavar="START_S",
         help="re-encode an earlier quackback-demo-raw.webm from START_S seconds",
     )  # fmt: skip
+    parser.add_argument(
+        "--gif-only", action="store_true", help="remake the GIF from an earlier mp4"
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
     args.out.mkdir(parents=True, exist_ok=True)
     raw = args.out / "quackback-demo-raw.webm"
-    start_s = args.transcode_only
-    if start_s is None:
-        with tempfile.TemporaryDirectory() as tmp:
-            start_s = anyio.run(record, Path(tmp))
-            shutil.copy(next(Path(tmp).glob("*.webm")), raw)
-        logging.info("the simulator was up %.1f s into the recording", start_s)
-    transcode(raw, args.out / "quackback-demo.mp4", args.out / "quackback-demo.gif", start_s)
+    mp4 = args.out / "quackback-demo.mp4"
+    if not args.gif_only:
+        start_s = args.transcode_only
+        if start_s is None:
+            with tempfile.TemporaryDirectory() as tmp:
+                start_s = anyio.run(record, Path(tmp))
+                shutil.copy(next(Path(tmp).glob("*.webm")), raw)
+            logging.info("the simulator was up %.1f s into the recording", start_s)
+        transcode(raw, mp4, start_s)
+    write_gif(mp4, args.out / "quackback-demo.gif")
     logging.info("wrote %s", args.out)
 
 

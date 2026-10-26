@@ -37,6 +37,10 @@ quackback = "quackback.cli:main"
 [project.optional-dependencies]
 sandbox = [
     "playwright>=1.50",
+    "quackback[vision]",
+]
+vision = [
+    "mediapipe>=1.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'",
 ]
 
 [build-system]

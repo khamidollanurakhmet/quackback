@@ -284,6 +284,40 @@ async def test_robot_walks_over_quacks_and_goes_home() -> None:
     assert voice.said[0].endswith("When should we ship?")  # asked after arriving
 
 
+async def test_a_robot_with_eyes_looks_for_the_human() -> None:
+    robot, voice = MockBackend(sees=True), FakeVoice(["Friday"])
+    result = await _robot_asker(robot, voice, person_search_timeout=12).ask("When?")
+    assert result["answer"] == "Friday"
+    assert robot.calls == [
+        "resume",
+        "text When?",
+        "find person 12",  # instead of walking to robot_target
+        "cue",
+        "text Got it: Friday",
+        "home",
+    ]
+
+
+async def test_nobody_found_means_asking_on_the_computer() -> None:
+    robot, voice = MockBackend(sees=True, finds=False), FakeVoice(["Friday"])
+    result = await _robot_asker(robot, voice).ask("When?")
+    assert result["source"] == "voice"
+    assert result["answer"] == "Friday"
+    assert "cue" not in robot.calls
+    assert not any(call.startswith("go_to") for call in robot.calls)
+    assert voice.said  # asked out loud on the PC all the same
+    assert robot.calls[-1] == "home"
+
+
+async def test_a_long_search_does_not_eat_the_question() -> None:
+    robot = MockBackend(sees=True, walk_time=30)
+    asker = _robot_asker(robot, FakeVoice(["Friday"]), ask_timeout=0.9)
+    with anyio.fail_after(10):
+        result = await asker.ask("When?")
+    assert result["answer"] == "Friday"
+    assert "cue" not in robot.calls
+
+
 async def test_robot_shows_the_matched_option() -> None:
     robot = MockBackend()
     await _robot_asker(robot, FakeVoice(["the second one"])).ask("Which?", None, ["a", "b"])

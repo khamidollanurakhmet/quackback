@@ -124,6 +124,26 @@ def test_robot_settings(no_file: dict[str, str]) -> None:
     assert Settings().target() == (1.5, 0.0)
 
 
+def test_person_settings(no_file: dict[str, str]) -> None:
+    assert Settings().find_person is True
+    assert Settings().person() == (1.5, 0.0)  # where robot_target says the human is
+    assert Settings(robot_target="1,1").person() == (1.0, 1.0)
+    assert Settings(sandbox_person="1.2,-0.9").person() == (1.2, -0.9)
+    assert Settings(sandbox_person=" None ").person() is None
+    settings = load_settings(
+        no_file
+        | {
+            "QUACKBACK_FIND_PERSON": "off",
+            "QUACKBACK_PERSON_SEARCH_TIMEOUT": "12",
+            "QUACKBACK_SANDBOX_PERSON_IMAGE": "~/me.png",
+        }
+    )
+    assert settings.find_person is False
+    assert settings.person_search_timeout == 12.0
+    assert settings.sandbox_person_image is not None
+    assert settings.sandbox_person_image.name == "me.png"
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
     [
@@ -133,6 +153,8 @@ def test_robot_settings(no_file: dict[str, str]) -> None:
         ("QUACKBACK_ROBOT_TARGET", "nan,0"),
         ("QUACKBACK_MAX_SPEED", "0"),
         ("QUACKBACK_MAX_TURN", "nan"),
+        ("QUACKBACK_SANDBOX_PERSON", "over there"),
+        ("QUACKBACK_PERSON_SEARCH_TIMEOUT", "0"),
     ],
 )
 def test_invalid_robot_settings(no_file: dict[str, str], name: str, value: str) -> None:

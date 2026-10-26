@@ -125,14 +125,23 @@ async def open_robot(settings: Settings, stack: AsyncExitStack) -> RobotBackend 
         return None
     from quackback.robot.microduck import MicroduckBackend
     from quackback.robot.sandbox import SandboxLink
+    from quackback.vision.person_detector import PersonDetector, vision_installed
 
     link = SandboxLink(
         settings.sandbox_url,
         browser=settings.sandbox_browser,
         headless=settings.sandbox_headless,
         record_dir=settings.sandbox_record_dir,
+        person=settings.person(),
+        person_image=settings.sandbox_person_image,
     )
-    return await stack.enter_async_context(MicroduckBackend(link, settings))
+    detector = None
+    if settings.find_person:
+        if vision_installed():
+            detector = PersonDetector(settings)
+        else:
+            log.info('to let the robot look for you, install "quackback[vision]"')
+    return await stack.enter_async_context(MicroduckBackend(link, settings, detector))
 
 
 def run_stdio(server: MCPServer) -> None:

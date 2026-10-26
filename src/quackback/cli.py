@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--version", action="version", version=f"quackback {__version__}")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("serve", help="run the MCP server on stdio (the default)")
-    commands.add_parser("download", help="download the voice models now, not on first use")
+    commands.add_parser("download", help="download the models now, not on first use")
     commands.add_parser(
         "setup-sandbox", help="install the browser parts the simulator robot needs (Playwright)"
     )
@@ -80,7 +80,8 @@ def download(settings: Settings) -> None:
 
 
 def prepare_models(settings: Settings) -> None:
-    """Make sure both voice models are on disk, showing the downloads as they happen."""
+    """Make sure the models are on disk, showing the downloads as they happen."""
+    from quackback.vision.person_detector import PersonDetector, vision_installed
     from quackback.voice import Voice
 
     voice = Voice(settings)
@@ -90,11 +91,20 @@ def prepare_models(settings: Settings) -> None:
     print(f"Whisper model {settings.whisper_model}", flush=True)
     if voice.stt.is_downloaded():
         print("  ready (already downloaded)", flush=True)
-        return
-    print("  downloading, a few hundred MB the first time ...", flush=True)
-    with growth_counter(voice.stt.cache_dir()):
-        voice.stt.download()
-    print("  ready", flush=True)
+    else:
+        print("  downloading, a few hundred MB the first time ...", flush=True)
+        with growth_counter(voice.stt.cache_dir()):
+            voice.stt.download()
+        print("  ready", flush=True)
+    if vision_installed():
+        # Optional: without it the robot walks to robot_target instead of looking for you.
+        print("Person detector (EfficientDet-Lite0)", flush=True)
+        try:
+            path = PersonDetector(settings).model_path(TerminalProgress())
+        except Exception as exc:
+            print(f"  not downloaded ({type(exc).__name__}: {exc}); it is tried again on first use")
+        else:
+            print(f"  ready: {path}", flush=True)
 
 
 def format_progress(name: str, done: int, total: int | None) -> str:

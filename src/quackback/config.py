@@ -64,6 +64,10 @@ class Settings:
     # Speed caps; empty means the robot's own maximum (the sandbox walks only at 0.25 m/s).
     max_speed: float | None = None
     max_turn: float | None = None
+    # A robot with a camera looks for the human instead of walking to robot_target (needs the
+    # `vision` extra), and gives up after this many seconds with nobody in view.
+    find_person: bool = True
+    person_search_timeout: float = 30.0
     # The simulator page, and the browser it runs in: a Playwright channel ("msedge",
     # "chrome") or empty for Edge on Windows, Chrome elsewhere, else Playwright's Chromium.
     sandbox_url: str = "https://pollen-robotics-microduck-simulator.hf.space/?boot=1"
@@ -71,9 +75,20 @@ class Settings:
     sandbox_headless: bool = False
     # Record the simulator window as video into this directory.
     sandbox_record_dir: Path | None = None
+    # Where the simulator's stand-in person stands, "forward,left" like robot_target: empty for
+    # at robot_target, "none" for nobody. And a picture of them (a PNG cutout), empty for the
+    # bundled one.
+    sandbox_person: str = ""
+    sandbox_person_image: Path | None = None
 
     def __post_init__(self) -> None:
-        for name in ("ask_timeout", "progress_interval", "listen_timeout", "end_silence"):
+        for name in (
+            "ask_timeout",
+            "progress_interval",
+            "listen_timeout",
+            "end_silence",
+            "person_search_timeout",
+        ):
             value = getattr(self, name)
             if not (math.isfinite(value) and value > 0):
                 raise ConfigError(f"{name} must be a positive number of seconds, got {value}")
@@ -85,6 +100,7 @@ class Settings:
         if self.robot not in ROBOTS:
             raise ConfigError(f"robot must be one of {', '.join(ROBOTS)}: {self.robot}")
         self.target()  # validates robot_target
+        self.person()  # and sandbox_person
         for name in ("max_speed", "max_turn"):
             value = getattr(self, name)
             if value is not None and not (math.isfinite(value) and value > 0):
@@ -92,15 +108,24 @@ class Settings:
 
     def target(self) -> tuple[float, float]:
         """robot_target as (forward, left) metres from the robot's start."""
-        try:
-            forward, left = (float(part) for part in self.robot_target.split(","))
-        except ValueError:
-            raise ConfigError(
-                f'robot_target must be "forward,left" in metres: {self.robot_target!r}'
-            ) from None
-        if not (math.isfinite(forward) and math.isfinite(left)):
-            raise ConfigError(f"robot_target must be finite: {self.robot_target!r}")
-        return forward, left
+        return _point("robot_target", self.robot_target)
+
+    def person(self) -> tuple[float, float] | None:
+        """Where the simulator's stand-in person stands, from the robot's start; None: nobody."""
+        text = self.sandbox_person.strip()
+        if text.lower() == "none":
+            return None
+        return _point("sandbox_person", text) if text else self.target()
+
+
+def _point(name: str, text: str) -> tuple[float, float]:
+    try:
+        forward, left = (float(part) for part in text.split(","))
+    except ValueError:
+        raise ConfigError(f'{name} must be "forward,left" in metres: {text!r}') from None
+    if not (math.isfinite(forward) and math.isfinite(left)):
+        raise ConfigError(f"{name} must be finite: {text!r}")
+    return forward, left
 
 
 ROBOTS = ("none", "sandbox")

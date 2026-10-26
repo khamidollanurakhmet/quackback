@@ -180,13 +180,18 @@ class Asker:
             await robot.show_text(question)
             # The walk gets a third of the time at most: the question must still be asked.
             arrived = False
-            with anyio.move_on_after(budget):
-                await robot.go_to(*self._settings.target(), stop_short=HUMAN_STOP_DISTANCE)
-                arrived = True
+            with anyio.move_on_after(budget) as walk:
+                if robot.can_find_person:
+                    arrived = await robot.approach_person(self._settings.person_search_timeout)
+                else:
+                    await robot.go_to(*self._settings.target(), stop_short=HUMAN_STOP_DISTANCE)
+                    arrived = True
             if arrived:
                 await robot.cue()
-            else:
+            elif walk.cancelled_caught:
                 log.warning("the robot is too slow, asking from where it is")
+            else:
+                log.info("the robot found nobody, asking on this computer")
         except RobotError as exc:
             log.warning("robot failed, asking without it: %s", exc)
         except Exception:  # a robot bug must not take the question down with it

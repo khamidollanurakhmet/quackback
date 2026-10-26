@@ -49,7 +49,10 @@ def test_unusable_log_file_exits(tmp_path: Path, capsys: pytest.CaptureFixture[s
 
 
 def test_download_failure_is_one_line(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    no_vision: None,
 ) -> None:
     from quackback.voice.tts import TextToSpeech
 
@@ -63,8 +66,19 @@ def test_download_failure_is_one_line(
     assert "download failed: OSError: network is unreachable" in capsys.readouterr().err
 
 
+@pytest.fixture
+def no_vision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """As on CI: no vision extra, so no detector model to fetch (wherever the tests run)."""
+    from quackback.vision import person_detector
+
+    monkeypatch.setattr(person_detector, "vision_installed", lambda: False)
+
+
 def test_download_skips_a_local_whisper_model(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    no_vision: None,
 ) -> None:
     from quackback.voice.tts import TextToSpeech
 
@@ -72,7 +86,40 @@ def test_download_skips_a_local_whisper_model(
         TextToSpeech, "model_path", lambda self, progress=None: tmp_path / "voice.onnx"
     )
     cli.download(Settings(models_dir=tmp_path, whisper_model=str(tmp_path)))
-    assert capsys.readouterr().out.rstrip().endswith("done")
+    out = capsys.readouterr().out
+    assert out.rstrip().endswith("done")
+    assert "Person detector" not in out
+
+
+@pytest.mark.parametrize("reachable", [True, False])
+def test_download_fetches_the_person_detector_last_and_never_fails_for_it(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    reachable: bool,
+) -> None:
+    from quackback.vision import person_detector
+    from quackback.voice.tts import TextToSpeech
+
+    monkeypatch.setattr(person_detector, "vision_installed", lambda: True)
+    monkeypatch.setattr(
+        TextToSpeech, "model_path", lambda self, progress=None: tmp_path / "voice.onnx"
+    )
+
+    def model_path(self: object, progress: object = None) -> Path:
+        if not reachable:
+            raise OSError("storage.googleapis.com is blocked here")
+        return tmp_path / "detector.tflite"
+
+    monkeypatch.setattr(person_detector.PersonDetector, "model_path", model_path)
+    cli.download(Settings(models_dir=tmp_path, whisper_model=str(tmp_path)))
+    out = capsys.readouterr().out
+    assert out.index("Whisper model") < out.index("Person detector")  # the voice comes first
+    assert out.rstrip().endswith("done")
+    if reachable:
+        assert "detector.tflite" in out
+    else:
+        assert "not downloaded (OSError: storage.googleapis.com is blocked here)" in out
 
 
 def test_setup_sandbox_runs_playwright_through_this_python(

@@ -56,6 +56,22 @@ class Settings:
     # Also log to this file (logs always go to stderr; stdout is the MCP transport).
     log_file: Path | None = None
 
+    # The robot that walks over to ask: "none", or "sandbox" (the Microduck simulator website).
+    robot: str = "none"
+    # Where the human is, in metres from the robot's start: "forward,left". The robot stops
+    # 0.4 m short of it.
+    robot_target: str = "1.5,0.0"
+    # Speed caps; empty means the robot's own maximum (the sandbox walks only at 0.25 m/s).
+    max_speed: float | None = None
+    max_turn: float | None = None
+    # The simulator page, and the browser it runs in: a Playwright channel ("msedge",
+    # "chrome") or empty for Edge on Windows, Chrome elsewhere, else Playwright's Chromium.
+    sandbox_url: str = "https://pollen-robotics-microduck-simulator.hf.space/?boot=1"
+    sandbox_browser: str = ""
+    sandbox_headless: bool = False
+    # Record the simulator window as video into this directory.
+    sandbox_record_dir: Path | None = None
+
     def __post_init__(self) -> None:
         for name in ("ask_timeout", "progress_interval", "listen_timeout", "end_silence"):
             value = getattr(self, name)
@@ -66,6 +82,28 @@ class Settings:
         if self.log_level.upper() not in ("DEBUG", "INFO", "WARNING", "ERROR"):
             raise ConfigError(f"log_level must be DEBUG, INFO, WARNING or ERROR: {self.log_level}")
         object.__setattr__(self, "log_level", self.log_level.upper())
+        if self.robot not in ROBOTS:
+            raise ConfigError(f"robot must be one of {', '.join(ROBOTS)}: {self.robot}")
+        self.target()  # validates robot_target
+        for name in ("max_speed", "max_turn"):
+            value = getattr(self, name)
+            if value is not None and not (math.isfinite(value) and value > 0):
+                raise ConfigError(f"{name} must be a positive number, got {value}")
+
+    def target(self) -> tuple[float, float]:
+        """robot_target as (forward, left) metres from the robot's start."""
+        try:
+            forward, left = (float(part) for part in self.robot_target.split(","))
+        except ValueError:
+            raise ConfigError(
+                f'robot_target must be "forward,left" in metres: {self.robot_target!r}'
+            ) from None
+        if not (math.isfinite(forward) and math.isfinite(left)):
+            raise ConfigError(f"robot_target must be finite: {self.robot_target!r}")
+        return forward, left
+
+
+ROBOTS = ("none", "sandbox")
 
 
 def default_config_path() -> Path:

@@ -104,3 +104,37 @@ def test_utf16_toml_is_a_clear_error(tmp_path: Path) -> None:
 
 def test_log_level_is_normalized(no_file: dict[str, str]) -> None:
     assert load_settings(no_file | {"QUACKBACK_LOG_LEVEL": "debug"}).log_level == "DEBUG"
+
+
+def test_robot_settings(no_file: dict[str, str]) -> None:
+    settings = load_settings(
+        no_file
+        | {
+            "QUACKBACK_ROBOT": "sandbox",
+            "QUACKBACK_ROBOT_TARGET": " 0.8 , -0.3 ",
+            "QUACKBACK_MAX_SPEED": "0.2",
+            "QUACKBACK_SANDBOX_HEADLESS": "yes",
+        }
+    )
+    assert settings.robot == "sandbox"
+    assert settings.target() == (0.8, -0.3)
+    assert settings.max_speed == 0.2
+    assert settings.max_turn is None
+    assert settings.sandbox_headless is True
+    assert Settings().target() == (1.5, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("QUACKBACK_ROBOT", "roomba"),
+        ("QUACKBACK_ROBOT_TARGET", "here"),
+        ("QUACKBACK_ROBOT_TARGET", "1,2,3"),
+        ("QUACKBACK_ROBOT_TARGET", "nan,0"),
+        ("QUACKBACK_MAX_SPEED", "0"),
+        ("QUACKBACK_MAX_TURN", "nan"),
+    ],
+)
+def test_invalid_robot_settings(no_file: dict[str, str], name: str, value: str) -> None:
+    with pytest.raises(ConfigError):
+        load_settings(no_file | {name: value})

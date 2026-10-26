@@ -501,5 +501,39 @@ Edge:
 | vx -0.2 | does not walk back |
 
 So in the simulator the duck walks only at 0.25 m/s and steers in arcs (a turning radius of
-about 0.15 m); `GAIT` in `robot/sandbox.py` says exactly that, and MicroduckBackend steers
+about 0.17 m: 33 deg/s at about 0.1 m/s); `GAIT` in `robot/sandbox.py` says exactly that, and MicroduckBackend steers
 accordingly. The arena is 3 x 3 m (walls at +-1.5 m); the duck spawns at (-0.6, 0) facing +x.
+
+## The duck's eyes in the simulator page
+
+The page has no camera feed and no depth sensor for a program to read, and no people in it.
+quackback adds them in the page itself (`robot/sandbox_eyes.js`), from the robot model's own
+MJCF sites, so that the PC-side code sees what it would see on a real duck:
+
+- **Camera:** the scene rendered from the `head_camera` site into an offscreen target, portrait
+  360 x 640 with a 72.7 degree vertical field of view (the twin's camera, upright), JPEG over
+  Playwright. The site, not MuJoCo's `<camera>`: that one faces backwards in this model.
+  About 20-30 ms a picture; quackback takes at most ten a second.
+- **Depth sensor:** 64 rays from the `tof` site over 45 x 45 degrees, laid out like
+  microduck_rl's `sim/tof.py` (row 0 at the top, column 0 on the left, slant range in mm,
+  status 5 or 255, 4 m at most). They hit the walls, props, the ball, the floor and the person,
+  never the duck itself. It sits about 8 cm ahead of the body's centre.
+- **Head:** `rl.headTarget` takes head commands that the walking policy tracks while walking;
+  no head mode is needed. Measured camera pitch for `head_pitch` -0.6 / -0.9 / -1.2 / -2.5:
+  +12 / +23 / +30 / +47 degrees (-11 at rest). `head_yaw` 0.5 turns the camera 28 degrees at
+  rest pitch, but about twice as far with the head up, so quackback aims the head by where the
+  camera really points.
+- **Person:** a picture standing on the floor, turned toward the duck before every frame and
+  every depth reading; its transparent parts let the depth rays through.
+
+What the duck does with them is in `robot/microduck.py`. It looks around with its head while
+standing, and turns its body (in an arc here) only toward a side the depth sensor has just seen
+clear. The detector (MediaPipe EfficientDet-Lite0, person class only) gives a bearing, and the
+depth zones in that direction give the range, once the head has put the person in the middle of
+the picture. Every walk stops for anything the depth sensor sees within 50 cm in the duck's way.
+The walk up to the person ends at 55 cm by the sensor, plus the turning radius for a duck that
+turns only in arcs (72 cm here, about 65 cm once it has coasted to a stop): walking away again,
+its first half circle takes it up to about 15 cm closer to them. So before it turns round, it
+looks about with its depth sensor and walks only an arc that keeps its body 50 cm from
+everything it saw, turning the other way, or staying put, when the shorter way is too close. Measured in the page: the walk
+coasts 5-8 cm after a stop, and the body keeps turning a few degrees for about a second.

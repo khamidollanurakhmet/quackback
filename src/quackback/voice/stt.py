@@ -3,6 +3,7 @@
 import logging
 import os
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -27,6 +28,33 @@ class SpeechToText:
         from faster_whisper.utils import download_model
 
         download_model(self._model_name)
+
+    def is_downloaded(self) -> bool:
+        if os.path.isdir(self._model_name):
+            return True
+        from faster_whisper.utils import download_model
+
+        try:
+            download_model(self._model_name, local_files_only=True)
+        except (FileNotFoundError, ValueError):
+            return False
+        return True
+
+    def cache_dir(self) -> Path | None:
+        """The Hugging Face cache folder this model downloads into, if it can be told.
+
+        faster-whisper silences the hub's progress bars; watching this folder grow is how a
+        terminal can still show that the download is moving.
+        """
+        try:
+            from faster_whisper.utils import _MODELS
+            from huggingface_hub import constants
+        except ImportError:
+            return None
+        repo = self._model_name if "/" in self._model_name else _MODELS.get(self._model_name)
+        if not repo:
+            return None
+        return Path(constants.HF_HUB_CACHE) / ("models--" + repo.replace("/", "--"))
 
     def load(self) -> None:
         """Load and warm up the model; fall back to CPU if a GPU setup fails. Blocking."""

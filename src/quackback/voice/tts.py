@@ -11,7 +11,9 @@ import re
 import shutil
 import sys
 import threading
+import urllib.error
 import urllib.request
+from collections.abc import Callable
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -37,7 +39,56 @@ def is_voice_path(voice: str) -> bool:
     return voice.endswith(".onnx") or "/" in voice or "\\" in voice
 
 
-def ensure_voice(voice: str, voices_dir: Path) -> Path:
+# progress(file name, bytes so far, total bytes or None)
+Progress = Callable[[str, int, int | None], None]
+
+
+class LogProgress:
+    """Progress as log lines, one per tenth (the server has no terminal to draw a bar on)."""
+
+    def __init__(self) -> None:
+        self._last_step: dict[str, int] = {}
+
+    def __call__(self, name: str, done: int, total: int | None) -> None:
+        if not total:
+            return
+        step = done * 10 // total
+        if step > self._last_step.get(name, -1):
+            self._last_step[name] = step
+            log.info("downloading %s: %d%% of %.0f MB", name, step * 10, total / 1e6)
+
+
+def download(url: str, target: Path, progress: Progress | None = None) -> None:
+    """Download to `target` through `target.part`, picking up where an earlier attempt stopped."""
+    partial = target.with_name(target.name + ".part")
+    have = partial.stat().st_size if partial.is_file() else 0
+    headers = {"Range": f"bytes={have}-"} if have else {}
+    try:
+        response = urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=_DOWNLOAD_TIMEOUT_S
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416 and have:  # the partial file is not a prefix of this file: start over
+            partial.unlink()
+            download(url, target, progress)
+            return
+        raise
+    with response:
+        if have and response.status != 206:  # the server ignored the range: start over
+            have = 0
+        length = response.headers.get("Content-Length")
+        total = have + int(length) if length and length.isdigit() else None
+        done = have
+        with partial.open("ab" if have else "wb") as out:
+            while chunk := response.read(1 << 16):
+                out.write(chunk)
+                done += len(chunk)
+                if progress is not None:
+                    progress(target.name, done, total)
+    os.replace(partial, target)
+
+
+def ensure_voice(voice: str, voices_dir: Path, progress: Progress | None = None) -> Path:
     """Return the local model for a voice name, downloading it if needed. Blocking."""
     from piper.download_voices import URL_FORMAT, VOICE_PATTERN
 
@@ -48,6 +99,8 @@ def ensure_voice(voice: str, voices_dir: Path) -> Path:
     model = voices_dir / f"{voice}.onnx"
     config = voices_dir / f"{voice}.onnx.json"
     if all(path.is_file() and path.stat().st_size > 0 for path in (model, config)):
+        for leftover in (model, config):  # a download interrupted after an earlier one finished
+            leftover.with_name(leftover.name + ".part").unlink(missing_ok=True)
         return model
     if os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _TRUE:
         raise FileNotFoundError(f"Piper voice {voice} is not downloaded and HF_HUB_OFFLINE is set")
@@ -62,18 +115,14 @@ def ensure_voice(voice: str, voices_dir: Path) -> Path:
     endpoint = os.environ.get("HF_ENDPOINT", "").strip().rstrip("/")
     log.info("downloading Piper voice %s", voice)
     # The model goes last: once it is in place, the voice is complete. A download cut short
-    # leaves only a .part file, which the next attempt overwrites.
+    # leaves a .part file that the next attempt continues.
     for target, extension in ((config, ".onnx.json"), (model, ".onnx")):
+        if target.is_file() and target.stat().st_size > 0:
+            continue
         url = URL_FORMAT.format(extension=extension, **parts)
         if endpoint and url.startswith(_HF):
             url = f"{endpoint}/{url.removeprefix(_HF)}"
-        partial = target.with_name(target.name + ".part")
-        with (
-            urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_S) as response,
-            partial.open("wb") as out,
-        ):
-            shutil.copyfileobj(response, out)
-        os.replace(partial, target)
+        download(url, target, progress)
     return model
 
 
@@ -143,21 +192,21 @@ class TextToSpeech:
             raise RuntimeError("the voice is not loaded")
         return int(self._voice.config.sample_rate)
 
-    def model_path(self) -> Path:
+    def model_path(self, progress: Progress | None = None) -> Path:
         """The voice model on disk, downloading a named voice first. Blocking."""
         if is_voice_path(self._voice_name):
             model = Path(self._voice_name).expanduser()
             if not model.is_file():
                 raise FileNotFoundError(f"Piper voice not found: {model}")
             return model
-        return ensure_voice(self._voice_name, self._voices_dir)
+        return ensure_voice(self._voice_name, self._voices_dir, progress)
 
     def load(self) -> None:
         """Load the voice and warm it up (espeak start-up, first inference). Blocking."""
         import onnxruntime
         from piper import PiperConfig, PiperVoice
 
-        model = self.model_path()
+        model = self.model_path(LogProgress())
         with open(f"{model}.json", encoding="utf-8") as f:
             config = PiperConfig.from_dict(json.load(f))
         options = onnxruntime.SessionOptions()

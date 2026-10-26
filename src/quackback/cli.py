@@ -3,9 +3,14 @@
 import argparse
 import json
 import logging
+import math
 import os
 import sys
-from contextlib import AsyncExitStack
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import AsyncExitStack, contextmanager
+from pathlib import Path
 
 import anyio
 
@@ -42,14 +47,18 @@ def main(argv: list[str] | None = None) -> None:
     trial.add_argument("--keyboard", action="store_true", help="skip voice, use the dialog")
     args = parser.parse_args(argv)
 
-    if args.command in (None, "serve"):
-        serve()
-    elif args.command == "download":
-        download(_settings())
-    elif args.command == "setup-sandbox":
-        setup_sandbox()
-    elif args.command == "try":
-        trial_run(_settings(), args.question, args.option, args.keyboard)
+    try:
+        if args.command in (None, "serve"):
+            serve()
+        elif args.command == "download":
+            download(_settings())
+        elif args.command == "setup-sandbox":
+            setup_sandbox()
+        elif args.command == "try":
+            trial_run(_settings(), args.question, args.option, args.keyboard)
+    except KeyboardInterrupt:
+        sys.stderr.write("\nInterrupted. A download picks up where it stopped next time.\n")
+        sys.exit(130)
 
 
 def serve() -> None:
@@ -62,18 +71,81 @@ def serve() -> None:
 
 
 def download(settings: Settings) -> None:
-    from quackback.voice import Voice
-
-    voice = Voice(settings)
     try:
-        print(f"Piper voice {settings.piper_voice} ...", flush=True)
-        print(f"  {voice.tts.model_path()}")
-        print(f"Whisper model {settings.whisper_model} ...", flush=True)
-        voice.stt.download()
+        prepare_models(settings)
     except Exception as exc:
         sys.stderr.write(f"quackback: download failed: {type(exc).__name__}: {exc}\n")
         sys.exit(1)
-    print("  done")
+    print("done")
+
+
+def prepare_models(settings: Settings) -> None:
+    """Make sure both voice models are on disk, showing the downloads as they happen."""
+    from quackback.voice import Voice
+
+    voice = Voice(settings)
+    print(f"Piper voice {settings.piper_voice}", flush=True)
+    path = voice.tts.model_path(TerminalProgress())
+    print(f"  ready: {path}", flush=True)
+    print(f"Whisper model {settings.whisper_model}", flush=True)
+    if voice.stt.is_downloaded():
+        print("  ready (already downloaded)", flush=True)
+        return
+    print("  downloading, a few hundred MB the first time ...", flush=True)
+    with growth_counter(voice.stt.cache_dir()):
+        voice.stt.download()
+    print("  ready", flush=True)
+
+
+def format_progress(name: str, done: int, total: int | None) -> str:
+    if total:
+        return f"  {name}  {done / 1e6:.1f} / {total / 1e6:.1f} MB  {done * 100 // total}%"
+    return f"  {name}  {done / 1e6:.1f} MB"
+
+
+class TerminalProgress:
+    """A download's progress on one terminal line, redrawn in place a few times a second."""
+
+    def __init__(self, interval: float = 0.2) -> None:
+        self._interval = interval
+        self._drawn_at = -math.inf
+
+    def __call__(self, name: str, done: int, total: int | None) -> None:
+        finished = total is not None and done >= total
+        now = time.monotonic()
+        if not finished and now - self._drawn_at < self._interval:
+            return
+        self._drawn_at = now
+        sys.stdout.write("\r" + format_progress(name, done, total).ljust(64))
+        if finished:
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+@contextmanager
+def growth_counter(folder: Path | None) -> Iterator[None]:
+    """Show how much has arrived in `folder/blobs` while the block runs."""
+    stop = threading.Event()
+    started = time.monotonic()
+
+    def count() -> None:
+        while not stop.wait(0.5):
+            blobs = folder / "blobs" if folder else None
+            size = 0
+            if blobs is not None and blobs.is_dir():
+                size = sum(f.stat().st_size for f in blobs.iterdir() if f.is_file())
+            elapsed = time.monotonic() - started
+            sys.stdout.write(f"\r  {size / 1e6:.0f} MB so far, {elapsed:.0f} s".ljust(64))
+            sys.stdout.flush()
+
+    thread = threading.Thread(target=count, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+        sys.stdout.write("\n")
 
 
 def setup_sandbox() -> None:
@@ -104,7 +176,11 @@ def trial_run(settings: Settings, question: str, options: list[str], keyboard: b
     setup_logging(settings)
     voice = None
     if not keyboard and settings.voice:
-        print("Loading the voice models (the first time downloads them) ...", flush=True)
+        try:
+            prepare_models(settings)
+        except Exception as exc:  # load() below fails too, and reports it
+            print(f"Could not download the voice models: {type(exc).__name__}: {exc}")
+        print("Loading the voice models ...", flush=True)
         voice = Voice(settings)
         voice.load()
         if voice.error:

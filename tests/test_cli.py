@@ -6,6 +6,8 @@ import pytest
 from quackback import cli
 from quackback.config import Settings
 
+CR, NL = chr(13), chr(10)
+
 
 def test_version(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exit_info:
@@ -51,7 +53,7 @@ def test_download_failure_is_one_line(
 ) -> None:
     from quackback.voice.tts import TextToSpeech
 
-    def offline(self: TextToSpeech) -> Path:
+    def offline(self: TextToSpeech, progress: object = None) -> Path:
         raise OSError("network is unreachable")
 
     monkeypatch.setattr(TextToSpeech, "model_path", offline)
@@ -66,7 +68,9 @@ def test_download_skips_a_local_whisper_model(
 ) -> None:
     from quackback.voice.tts import TextToSpeech
 
-    monkeypatch.setattr(TextToSpeech, "model_path", lambda self: tmp_path / "voice.onnx")
+    monkeypatch.setattr(
+        TextToSpeech, "model_path", lambda self, progress=None: tmp_path / "voice.onnx"
+    )
     cli.download(Settings(models_dir=tmp_path, whisper_model=str(tmp_path)))
     assert capsys.readouterr().out.rstrip().endswith("done")
 
@@ -103,3 +107,37 @@ def test_setup_sandbox_without_the_extra(
         cli.main(["setup-sandbox"])
     assert exit_info.value.code == 1
     assert "quackback[sandbox]" in capsys.readouterr().err
+
+
+def test_progress_line() -> None:
+    assert cli.format_progress("voice.onnx", 17_800_000, 63_200_000) == (
+        "  voice.onnx  17.8 / 63.2 MB  28%"
+    )
+    assert cli.format_progress("voice.onnx", 5_000_000, None) == "  voice.onnx  5.0 MB"
+
+
+def test_terminal_progress_draws_in_place_and_ends_the_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    progress = cli.TerminalProgress(interval=0)
+    progress("voice.onnx", 50, 100)
+    progress("voice.onnx", 100, 100)
+    out = capsys.readouterr().out
+    assert out.count(CR) == 2
+    assert out.endswith(NL)
+    assert "100%" in out
+
+
+def test_ctrl_c_is_a_short_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def interrupted(settings: Settings) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "download", interrupted)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["download"])
+    assert exit_info.value.code == 130
+    err = capsys.readouterr().err
+    assert "Interrupted" in err
+    assert "Traceback" not in err

@@ -9,7 +9,7 @@ before that: the voice models load in the lifespan, inside the server.
 import logging
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Annotated
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -21,6 +21,7 @@ from quackback import __version__
 from quackback.ask import Asker, AskFailed, AskResult
 from quackback.config import Settings
 from quackback.keyboard import KeyboardPrompt
+from quackback.robot.base import RobotBackend
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +67,9 @@ def create_server(settings: Settings, asker: Asker | None = None) -> MCPServer:
 
             voice = Voice(settings)
             voice.start_loading()
-        yield Asker(settings, voice=voice, keyboard=KeyboardPrompt())
+        async with AsyncExitStack() as stack:
+            robot = await open_robot(settings, stack)
+            yield Asker(settings, voice=voice, keyboard=KeyboardPrompt(), robot=robot)
 
     server = MCPServer(
         "quackback", version=__version__, instructions=INSTRUCTIONS, lifespan=lifespan
@@ -100,7 +103,36 @@ def create_server(settings: Settings, asker: Asker | None = None) -> MCPServer:
         except AskFailed as exc:
             raise ToolError(str(exc)) from exc
 
+    @server.tool(
+        title="Stop the robot",
+        annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=True),
+    )
+    async def stop_robot(ctx: Context) -> str:
+        """Stop the robot right away and keep it still until the next question.
+
+        Use this if the human asks you to stop the robot, or something looks wrong with it."""
+        active: Asker = ctx.request_context.lifespan_context
+        if not await active.stop_robot():
+            return "There is no robot."
+        return "The robot stopped."
+
     return server
+
+
+async def open_robot(settings: Settings, stack: AsyncExitStack) -> RobotBackend | None:
+    """The configured robot, connecting in the background; None for no robot."""
+    if settings.robot == "none":
+        return None
+    from quackback.robot.microduck import MicroduckBackend
+    from quackback.robot.sandbox import SandboxLink
+
+    link = SandboxLink(
+        settings.sandbox_url,
+        browser=settings.sandbox_browser,
+        headless=settings.sandbox_headless,
+        record_dir=settings.sandbox_record_dir,
+    )
+    return await stack.enter_async_context(MicroduckBackend(link, settings))
 
 
 def run_stdio(server: MCPServer) -> None:

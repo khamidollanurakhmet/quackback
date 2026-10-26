@@ -18,10 +18,10 @@ def _server(voice: FakeVoice | None = None, keyboard: FakeKeyboard | None = None
     return create_server(settings, asker=asker)
 
 
-async def test_lists_one_tool_with_a_safe_description() -> None:
+async def test_lists_the_tools_with_a_safe_description() -> None:
     async with Client(_server(ask_timeout=120), mode="legacy") as client:
         tools = (await client.list_tools()).tools
-    assert [tool.name for tool in tools] == ["ask_human"]
+    assert [tool.name for tool in tools] == ["ask_human", "stop_robot"]
     tool = tools[0]
     assert "120 seconds" in tool.description
     assert "never authorization" in tool.description
@@ -97,3 +97,22 @@ async def test_missing_question_is_rejected() -> None:
     async with Client(_server(), mode="legacy") as client:
         result = await client.call_tool("ask_human", {"context": "no question"})
     assert result.is_error
+
+
+async def test_stop_robot_without_a_robot() -> None:
+    async with Client(_server(), mode="legacy") as client:
+        result = await client.call_tool("stop_robot", {})
+    assert not result.is_error
+    assert result.structured_content == {"result": "There is no robot."}
+
+
+async def test_stop_robot_stops_it() -> None:
+    from quackback.robot.mock import MockBackend
+
+    settings = Settings()
+    robot = MockBackend()
+    server = create_server(settings, asker=Asker(settings, None, FakeKeyboard(), robot=robot))
+    async with Client(server, mode="legacy") as client:
+        result = await client.call_tool("stop_robot", {})
+    assert result.structured_content == {"result": "The robot stopped."}
+    assert robot.calls == ["stop"]

@@ -69,3 +69,22 @@ def test_download_skips_a_local_whisper_model(
     monkeypatch.setattr(TextToSpeech, "model_path", lambda self: tmp_path / "voice.onnx")
     cli.download(Settings(models_dir=tmp_path, whisper_model=str(tmp_path)))
     assert capsys.readouterr().out.rstrip().endswith("done")
+
+
+def test_setup_sandbox_runs_playwright_through_this_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+    import sys
+
+    ran: list[list[str]] = []
+
+    def fake_run(command: list[str], check: bool) -> subprocess.CompletedProcess[bytes]:
+        ran.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["setup-sandbox"])
+    assert exit_info.value.code == 0
+    assert ran == [[sys.executable, "-m", "playwright", "install", "chromium", "ffmpeg"]]

@@ -15,6 +15,7 @@ from typing_extensions import TypedDict
 from quackback.config import Settings
 from quackback.keyboard import KeyboardUnavailable
 from quackback.options import match_option
+from quackback.robot.base import HUMAN_STOP_DISTANCE, RobotBackend, RobotError
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +25,8 @@ NO_ANSWER = "The human did not answer. Make a reasonable decision and note it."
 VOICE_READY_WAIT_S = 15.0
 # "Got it." is spoken after the answer is safely recorded, and may run past the ask timeout.
 CONFIRM_TIMEOUT_S = 5.0
+# Like the voice: how long a question waits for the robot to come up, at most.
+ROBOT_READY_WAIT_S = 15.0
 
 Source = Literal["voice", "keyboard", "timeout"]
 Progress = Callable[[float, float, str], Awaitable[None]]
@@ -85,10 +88,12 @@ class Asker:
         settings: Settings,
         voice: VoiceChannel | None,
         keyboard: KeyboardChannel,
+        robot: RobotBackend | None = None,
     ) -> None:
         self._settings = settings
         self._voice = voice
         self._keyboard = keyboard
+        self._robot = robot
         self._lock = anyio.Lock()
 
     async def ask(
@@ -137,16 +142,76 @@ class Asker:
             acquired = True
         if not acquired:
             return None
+        reply = None
         try:
-            reply = None
-            with anyio.move_on_after(_remaining(deadline)):
-                reply = await self._ask(question, context, options, deadline)
-            if reply is not None and reply.source == "voice" and self._voice is not None:
-                with anyio.move_on_after(CONFIRM_TIMEOUT_S):
-                    await self._confirm(self._voice, reply.text, options)
-            return reply
+            try:
+                with anyio.move_on_after(_remaining(deadline)):
+                    await self._approach(question)
+                    reply = await self._ask(question, context, options, deadline)
+                if reply is not None and reply.source == "voice" and self._voice is not None:
+                    with anyio.move_on_after(CONFIRM_TIMEOUT_S):
+                        await self._confirm(self._voice, reply.text, options)
+                return reply
+            finally:
+                # Before the next question may start, so its walk supersedes this trip home.
+                await self._dismiss_robot(reply, options)
         finally:
             self._lock.release()
+
+    async def stop_robot(self) -> bool:
+        """Emergency stop. False if there is no robot."""
+        if self._robot is None:
+            return False
+        await self._robot.emergency_stop()
+        return True
+
+    async def _approach(self, question: str) -> None:
+        """Walk the robot to the human and quack. Without a robot, or if it fails, carry on."""
+        robot = self._robot
+        if robot is None:
+            return
+        try:
+            # A new question lifts an earlier emergency stop; a stop from here on holds for it.
+            robot.resume()
+            budget = self._settings.ask_timeout / 3
+            if not await robot.wait_ready(min(ROBOT_READY_WAIT_S, budget)):
+                log.info("the robot is not ready, asking without it")
+                return
+            await robot.show_text(question)
+            # The walk gets a third of the time at most: the question must still be asked.
+            arrived = False
+            with anyio.move_on_after(budget):
+                await robot.go_to(*self._settings.target(), stop_short=HUMAN_STOP_DISTANCE)
+                arrived = True
+            if arrived:
+                await robot.cue()
+            else:
+                log.warning("the robot is too slow, asking from where it is")
+        except RobotError as exc:
+            log.warning("robot failed, asking without it: %s", exc)
+        except Exception:  # a robot bug must not take the question down with it
+            log.exception("robot failed unexpectedly, asking without it")
+
+    async def _dismiss_robot(self, reply: _Reply | None, options: list[str]) -> None:
+        """Show the answer (or clear the question) and send the robot home; on time, out of
+        time, or after a failure."""
+        robot = self._robot
+        if robot is None:
+            return
+        answer = None
+        if reply is not None:
+            answer = (
+                f"Got it: {(match_option(reply.text, options) if options else None) or reply.text}"
+            )
+        with anyio.CancelScope(shield=True), anyio.move_on_after(2):
+            try:
+                await robot.show_text(answer)
+            except Exception as exc:
+                log.debug("could not update the robot's caption: %s", exc)
+        try:
+            robot.send_home()
+        except Exception:
+            log.exception("could not send the robot home")
 
     async def _ask(
         self, question: str, context: str | None, options: list[str], deadline: float

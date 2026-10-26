@@ -3,6 +3,7 @@ import pytest
 
 from quackback.ask import NO_ANSWER, Asker, AskFailed, spoken_question
 from quackback.config import Settings
+from quackback.robot.mock import MockBackend
 from tests.fakes import FakeKeyboard, FakeVoice
 
 pytestmark = pytest.mark.anyio
@@ -252,3 +253,109 @@ async def test_real_voice_still_loading_is_not_ready() -> None:
     voice = Voice(Settings())  # never loaded: like models still downloading
     with anyio.fail_after(5):
         assert not await voice.wait_ready(0.2)
+
+
+def _robot_asker(
+    robot: MockBackend,
+    voice: FakeVoice,
+    keyboard: FakeKeyboard | None = None,
+    **settings: object,
+) -> Asker:
+    return Asker(
+        Settings(**settings),  # type: ignore[arg-type]
+        voice=voice,
+        keyboard=keyboard or FakeKeyboard(),
+        robot=robot,
+    )
+
+
+async def test_robot_walks_over_quacks_and_goes_home() -> None:
+    robot, voice = MockBackend(), FakeVoice(["Friday"])
+    result = await _robot_asker(robot, voice).ask("When should we ship?")
+    assert result["source"] == "voice"
+    assert robot.calls == [
+        "resume",
+        "text When should we ship?",
+        "go_to 1.5,0 short 0.4",  # to the human, stopping 40 cm short
+        "cue",
+        "text Got it: Friday",
+        "home",
+    ]
+    assert voice.said[0].endswith("When should we ship?")  # asked after arriving
+
+
+async def test_robot_shows_the_matched_option() -> None:
+    robot = MockBackend()
+    await _robot_asker(robot, FakeVoice(["the second one"])).ask("Which?", None, ["a", "b"])
+    assert "text Got it: b" in robot.calls
+
+
+async def test_robot_goes_to_the_configured_point() -> None:
+    robot = MockBackend()
+    await _robot_asker(robot, FakeVoice(["ok"]), robot_target="0.5,-0.25").ask("Q?")
+    assert "go_to 0.5,-0.25 short 0.4" in robot.calls
+
+
+async def test_failing_robot_still_asks() -> None:
+    robot, voice = MockBackend(fail=True), FakeVoice(["Friday"])
+    result = await _robot_asker(robot, voice).ask("When?")
+    assert result["answer"] == "Friday"
+    assert "cue" not in robot.calls  # it never got there
+    assert robot.calls[-1] == "home"
+
+
+async def test_robot_not_ready_is_skipped() -> None:
+    robot = MockBackend(ready=False)
+    result = await _robot_asker(robot, FakeVoice(["Friday"])).ask("When?")
+    assert result["source"] == "voice"
+    assert not any(call.startswith("go_to") for call in robot.calls)
+
+
+async def test_a_slow_robot_does_not_eat_the_question() -> None:
+    robot = MockBackend(walk_time=30)  # stuck somewhere
+    asker = _robot_asker(robot, FakeVoice(["Friday"]), ask_timeout=0.9)
+    with anyio.fail_after(10):
+        result = await asker.ask("When?")
+    assert result["source"] == "voice"  # asked after a third of the time, wherever it was
+    assert result["answer"] == "Friday"
+    assert "cue" not in robot.calls
+    assert robot.calls[-1] == "home"
+
+
+async def test_timeout_clears_the_question_and_sends_the_robot_home() -> None:
+    robot = MockBackend()
+    asker = _robot_asker(robot, FakeVoice(), FakeKeyboard(delay=30), ask_timeout=0.5)
+    with anyio.fail_after(10):
+        result = await asker.ask("When?")
+    assert result["source"] == "timeout"
+    assert robot.calls[-2:] == ["text None", "home"]
+
+
+async def test_a_robot_bug_never_breaks_the_question() -> None:
+    class BrokenRobot(MockBackend):
+        async def go_to(self, x: float, y: float, stop_short: float = 0.0) -> None:
+            raise ZeroDivisionError("oops")
+
+        def send_home(self) -> None:
+            raise RuntimeError("also oops")
+
+    result = await _robot_asker(BrokenRobot(), FakeVoice(["fine"])).ask("Q?")
+    assert result["answer"] == "fine"
+
+
+async def test_the_robot_goes_home_before_the_next_question_starts() -> None:
+    robot = MockBackend()
+    asker = _robot_asker(robot, FakeVoice(["one", "two"]))
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(asker.ask, "first")
+        tg.start_soon(asker.ask, "second")
+    homes = [i for i, call in enumerate(robot.calls) if call == "home"]
+    walks = [i for i, call in enumerate(robot.calls) if call.startswith("go_to")]
+    assert homes[0] < walks[1]  # the first trip home is sent before the second walk
+
+
+async def test_stop_robot() -> None:
+    robot = MockBackend()
+    assert await _robot_asker(robot, FakeVoice()).stop_robot()
+    assert robot.calls == ["stop"]
+    assert not await _asker(None, FakeKeyboard()).stop_robot()

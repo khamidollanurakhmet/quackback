@@ -76,6 +76,7 @@ def test_setup_sandbox_runs_playwright_through_this_python(
 ) -> None:
     import subprocess
     import sys
+    import types
 
     ran: list[list[str]] = []
 
@@ -83,8 +84,22 @@ def test_setup_sandbox_runs_playwright_through_this_python(
         ran.append(command)
         return subprocess.CompletedProcess(command, 0)
 
+    # The "sandbox" extra may not be installed here; only its presence is checked.
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(SystemExit) as exit_info:
         cli.main(["setup-sandbox"])
     assert exit_info.value.code == 0
     assert ran == [[sys.executable, "-m", "playwright", "install", "chromium", "ffmpeg"]]
+
+
+def test_setup_sandbox_without_the_extra(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "playwright", None)  # makes the import fail
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["setup-sandbox"])
+    assert exit_info.value.code == 1
+    assert "quackback[sandbox]" in capsys.readouterr().err

@@ -1,10 +1,12 @@
-"""Record the demo: the simulated duck walks over, asks a question, and walks home.
+"""Record the demo: the simulated duck looks for the person, walks over, asks, and walks home.
 
     uv run --extra sandbox python scripts/record_demo.py demo/
 
-Runs the real ask_human flow (Asker + MicroduckBackend + the simulator website) with a scripted
-human, so it needs no microphone and makes no sound. Writes demo/quackback-demo.mp4 (the boot
-screen trimmed off) and demo/quackback-demo.gif.
+Runs the real ask_human flow (Asker + MicroduckBackend + person detector + the simulator
+website) with a scripted human, so it needs no microphone and makes no sound. The stand-in
+person stands off to the side, so the duck has to look around first; an inset shows what the
+duck's camera sees and the box the detector on the PC drew. Writes demo/quackback-demo.mp4 (the
+boot screen trimmed off) and demo/quackback-demo.gif.
 """
 
 import argparse
@@ -19,15 +21,18 @@ from pathlib import Path
 
 import anyio
 import av
+import numpy as np
 
 from quackback.ask import Asker
 from quackback.config import Settings
 from quackback.robot.microduck import MicroduckBackend
 from quackback.robot.sandbox import SandboxLink
+from quackback.vision.person_detector import Box, PersonDetector
 
 QUESTION = "Should the cache use PostgreSQL or SQLite?"
 OPTIONS = ["PostgreSQL", "SQLite"]
 ANSWER = "SQLite, keep it simple."
+PERSON = "1.3,-0.7"  # forward, left of the duck's start: out of view at first
 GIF_WIDTH = 640
 GIF_FPS = 10
 MP4_FPS = 25
@@ -56,56 +61,123 @@ class ScriptedHuman:
         return ANSWER
 
 
-async def human_eye_view(link: SandboxLink, settings: Settings) -> None:
-    """Put the camera where the human stands, so the duck walks toward the viewer.
+class ShowingDetector(PersonDetector):
+    """The real detector, keeping its last answer for the inset."""
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.last: list[Box] = []
+
+    def detect(self, image: np.ndarray) -> list[Box]:
+        self.last = super().detect(image)
+        return self.last
+
+
+async def watch_from_behind(link: SandboxLink, settings: Settings) -> None:
+    """Hold the page camera behind and above the duck's start, the person in full view.
 
     The page's camera always follows the duck: each frame it moves the orbit target toward the
-    duck and the camera by the same amount. Keeping the target on the duck and the camera in
-    place every frame leaves the follow nothing to do: a person standing still, watching.
-    Uses the page's debug handles (window.rl) directly: a demo nicety, not part of quackback.
-    MJCF ground (x, y) is three.js (x, -z), with y up.
+    duck and the camera by the same amount. Setting both every frame leaves the follow nothing
+    to do. Uses the page's debug handles (window.rl) directly: a demo nicety, not part of
+    quackback. MJCF ground (x, y) is three.js (x, -z), with y up.
     """
     base = await link.pose()
-    forward, left = settings.target()
+    forward, left = settings.person() or settings.target()
     c, s = math.cos(base.yaw), math.sin(base.yaw)
-    human_x = base.x + c * forward - s * left
-    human_y = base.y + s * forward + c * left
+    dx, dy = c * forward - s * left, s * forward + c * left
+    length = math.hypot(dx, dy)
+    camera = (base.x - 2.0 * dx / length, base.y - 2.0 * dy / length)
+    target = (base.x + 0.5 * dx, base.y + 0.5 * dy)
     await link._page.evaluate(
-        """([hx, hy]) => {
+        """([cx, cy, tx, ty]) => {
             const rl = window.rl;
             rl.chaseCam = false;
-            rl.camera.position.set(hx, 0.38, -hy);
-            const eye = rl.camera.position.clone();
+            rl.camera.fov = 50;  // wide enough for the whole person and the duck at its start
+            rl.camera.updateProjectionMatrix();
             const hold = () => {
-                const q = rl.data.qpos;
-                rl.controls.target.set(q[0], 0.1, -q[1]);
-                rl.camera.position.copy(eye);
+                rl.camera.position.set(cx, 1.1, -cy);
+                rl.controls.target.set(tx, 0.85, -ty);
                 requestAnimationFrame(hold);
             };
             hold();
         }""",
-        [human_x, human_y],
+        [*camera, *target],
     )
+
+
+async def show_duck_eye(link: SandboxLink, detector: ShowingDetector) -> None:
+    """An inset with every picture the duck's camera takes, and the detector's box."""
+    await link._page.evaluate(
+        """() => {
+            const inset = document.createElement("canvas");
+            inset.width = 180; inset.height = 320;
+            Object.assign(inset.style, {
+                position: "fixed", right: "18px", bottom: "18px", zIndex: 99999,
+                border: "3px solid #fff8e1", borderRadius: "10px",
+                boxShadow: "0 6px 24px rgba(0,0,0,.35)", background: "#000",
+            });
+            document.body.appendChild(inset);
+            const g = inset.getContext("2d");
+            const qb = window.__quackback, eye = qb.eye;
+            qb.eye = () => {
+                const shot = eye();
+                const img = new Image();
+                img.onload = () => {
+                    g.drawImage(img, 0, 0, 180, 320);
+                    const box = window.__demoBox;
+                    g.font = "600 13px system-ui, sans-serif";
+                    if (box) {
+                        g.strokeStyle = "#ffd54f"; g.lineWidth = 3;
+                        g.strokeRect(box[0] * 180, box[1] * 320,
+                                     (box[2] - box[0]) * 180, (box[3] - box[1]) * 320);
+                        g.fillStyle = "#ffd54f";
+                        const label = `person ${box[4].toFixed(2)}`;
+                        g.fillText(label, box[0] * 180 + 4, box[1] * 320 + 16);
+                    }
+                    g.fillStyle = "rgba(0,0,0,.55)"; g.fillRect(0, 296, 180, 24);
+                    g.fillStyle = "#fff8e1"; g.fillText("duck's camera", 8, 313);
+                };
+                img.src = "data:image/jpeg;base64," + shot.jpeg;
+                return shot;
+            };
+        }"""
+    )
+    while True:
+        boxes = detector.last
+        box = None
+        if boxes:
+            b = boxes[0]
+            box = [b.left, b.top, b.right, b.bottom, b.score]
+        await link._page.evaluate("(box) => { window.__demoBox = box; }", box)
+        await anyio.sleep(0.1)
 
 
 async def record(video_dir: Path) -> float:
     """Run one question in the simulator; return when (seconds into the video) it started."""
-    settings = Settings(robot="sandbox", ask_timeout=120)
-    link = SandboxLink(settings.sandbox_url, headless=True, record_dir=video_dir)
+    settings = Settings(robot="sandbox", ask_timeout=180, sandbox_person=PERSON)
+    link = SandboxLink(
+        settings.sandbox_url, headless=True, record_dir=video_dir, person=settings.person()
+    )
     human = ScriptedHuman()
+    detector = ShowingDetector(settings)
     started = anyio.current_time()
-    async with MicroduckBackend(link, settings) as robot:
+    async with MicroduckBackend(link, settings, detector) as robot:
         if not await robot.wait_ready(240):
             sys.exit(f"the simulator did not start: {robot.error}")
+        if not robot.can_find_person:
+            sys.exit("no person detector: run with the sandbox extra")
         booted = anyio.current_time() - started
-        await human_eye_view(link, settings)
-        await anyio.sleep(1.0)
-        asker = Asker(settings, voice=human, keyboard=human, robot=robot)
-        result = await asker.ask(QUESTION, None, OPTIONS)
-        logging.info("ask_human returned %s", result)
-        with anyio.move_on_after(90):
-            await robot.go_to(0.0, 0.0)
-        await anyio.sleep(1.5)
+        await watch_from_behind(link, settings)
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(show_duck_eye, link, detector)
+            await anyio.sleep(1.0)
+            asker = Asker(settings, voice=human, keyboard=human, robot=robot)
+            result = await asker.ask(QUESTION, None, OPTIONS)
+            logging.info("ask_human returned %s", result)
+            with anyio.move_on_after(90):
+                await robot.go_to(0.0, 0.0)
+            await anyio.sleep(1.5)
+            tg.cancel_scope.cancel()
     return booted
 
 
